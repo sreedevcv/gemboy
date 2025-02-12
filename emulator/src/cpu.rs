@@ -32,6 +32,21 @@ impl CPU {
         }
     }
 
+    fn empty() -> Self {
+        CPU {
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            f: 0,
+            h: 0,
+            l: 0,
+            sp: 0,
+            pc: 0,
+        }
+    }
+
     fn zero_flag(&self) -> bool {
         (self.f & 0x01) != 0
     }
@@ -107,7 +122,47 @@ impl CPU {
         }
     }
 
-    fn get_reg16(&mut self, reg_index: u8) -> u16 {
+    fn get_reg16(&self, reg_index: u8) -> u16 {
+        assert!(reg_index < 4);
+
+        match reg_index {
+            0 => ((self.b as u16) << 8u8) | (self.c as u16),
+            1 => ((self.d as u16) << 8u8) | (self.e as u16),
+            2 => ((self.h as u16) << 8u8) | (self.l as u16),
+            3 => ((self.h as u16) << 8u8) | (self.l as u16),
+            _ => {
+                panic!("Unexpected register index({reg_index}) in CPU::get_reg16_mem")
+            }
+        }
+    }
+
+    fn set_reg16_mem(&mut self, reg_index: u8, value: u16) {
+        assert!(reg_index < 4);
+
+        match reg_index {
+            0 => {
+                self.b = ((value & 0xFF00) >> 8u8) as u8;
+                self.c = (value & 0x00FF) as u8;
+            }
+            1 => {
+                self.d = ((value & 0xFF00) >> 8u8) as u8;
+                self.e = (value & 0x00FF) as u8;
+            }
+            2 => {
+                self.h = ((value & 0xFF00) >> 8u8) as u8;
+                self.l = (value & 0x00FF) as u8;
+            }
+            3 => {
+                self.h = ((value & 0xFF00) >> 8u8) as u8;
+                self.l = (value & 0x00FF) as u8;
+            }
+            _ => {
+                panic!("Unexpected register index({reg_index}) in CPU::set_reg16_mem")
+            }
+        }
+    }
+
+    fn get_reg16_mem(&self, reg_index: u8) -> u16 {
         assert!(reg_index < 4);
 
         match reg_index {
@@ -176,7 +231,7 @@ impl CPU {
         let byte2 = self.read(memory);
         let imm16 = ((byte2 as u16) << 8u8) | (byte1 as u16);
         self.set_reg16(dest_reg, imm16);
-        println!("LD r16{dest_reg}, #{imm16}");
+        println!("LD r16-{dest_reg}, #{imm16}");
     }
 
     fn ld_between_hl_and_r8(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
@@ -210,10 +265,11 @@ impl CPU {
         let imm8 = self.read(memory);
         let addr = ((self.h as u16) << 8u8) | (self.l as u16);
         self.write(memory, addr, imm8);
+        println!("LD [hl], {imm8}");
     }
 
     fn ld_r16_mem_to_a(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
-        /*  ld a, [r16]
+        /*  ld a, [r16mem]
             bit  7 = 0
             bit  6 = 0
             bits 54 = source reg16
@@ -224,10 +280,21 @@ impl CPU {
 
         let source_reg = (opcode & 0x30) >> 4u8;
         self.a = memory.get_byte(self.get_reg16(source_reg));
+
+        // hl+
+        if source_reg == 2 {
+            self.set_reg16_mem(source_reg, self.get_reg16_mem(source_reg) + 1);
+        }
+        // hl-
+        else if source_reg == 3 {
+            self.set_reg16_mem(source_reg, self.get_reg16_mem(source_reg) - 1);
+        }
+
+        println!("LD a, [r16-{source_reg}]");
     }
 
     fn ld_a_to_r16_mem(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
-        /*  ld [r16], a
+        /*  ld [r16mem], a
             bit  7 = 0
             bit  6 = 0
             bits 54 = dest reg16
@@ -237,6 +304,86 @@ impl CPU {
         */
         let source_reg = (opcode & 0x30) >> 4u8;
         memory.set_byte(self.get_reg16(source_reg), self.a);
+
+        // hl+
+        if source_reg == 2 {
+            self.set_reg16_mem(source_reg, self.get_reg16_mem(source_reg) + 1);
+        }
+        // hl-
+        else if source_reg == 3 {
+            self.set_reg16_mem(source_reg, self.get_reg16_mem(source_reg) - 1);
+        }
+        println!("LD [r16-{source_reg}], a");
+    }
+
+    fn ld_imm16_mem_to_a(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
+        /*  ld a, [imm16]
+            bits = 1111_1010
+            bytes  3
+            cycles 4
+        */
+        let low_byte = self.read(memory);
+        let high_byte = self.read(memory);
+        let addr = ((high_byte as u16) << 8u8) | (low_byte as u16);
+        self.a = memory.get_byte(addr);
+        println!("LD a, #[{addr}]");
+    }
+
+    fn ld_a_to_imm16_mem(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
+        /*  ld [imm16], a
+            bits = 1110_1010
+            bytes  3
+            cycles 4
+        */
+        let low_byte = self.read(memory);
+        let high_byte = self.read(memory);
+        let addr = ((high_byte as u16) << 8u8) | (low_byte as u16);
+        memory.set_byte(addr, self.a);
+        println!("LD #[{addr}], a");
+    }
+
+    fn ldh_c_mem_to_a(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
+        /*  ld a, [c]
+            bits = 1111_0010
+            bytes  1
+            cycles 2
+        */
+
+        let addr = 0xFF00 | (self.c as u16);
+        self.a = memory.get_byte(addr);
+    }
+
+    fn ldh_a_to_c_mem(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
+        /*  ld [c], a
+            bits = 1110_0010
+            bytes  1
+            cycles 2
+        */
+
+        let addr = 0xFF00 | (self.c as u16);
+        memory.set_byte(addr, self.a);
+    }
+
+    fn ldh_imm8_mem_to_a(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
+        /*  ld a, [imm8]
+            bits = 1111_0000
+            bytes  2
+            cycles 3
+        */
+
+        let addr = 0xFF00 | (self.read(memory) as u16);
+        self.a = memory.get_byte(addr);
+    }
+
+    fn ldh_a_to_imm8_mem(&mut self, opcode: u8, memory: &mut impl MemoryInterface) {
+        /*  ld [imm8], a
+            bits = 1110_0000
+            bytes  2
+            cycles 3
+        */
+
+        let addr = 0xFF00 | (self.read(memory) as u16);
+        memory.set_byte(addr, self.a);
     }
 }
 
@@ -262,6 +409,18 @@ pub fn decode(cpu: &mut CPU, memory: &mut impl MemoryInterface) {
         cpu.ld_r16_mem_to_a(opcode, memory);
     } else if (opcode & 0xC0 == 0) && (opcode & 0x0F == 0x2) {
         cpu.ld_a_to_r16_mem(opcode, memory);
+    } else if opcode == 0b1111_1010 {
+        cpu.ld_imm16_mem_to_a(opcode, memory);
+    } else if opcode == 0b1110_1010 {
+        cpu.ld_a_to_imm16_mem(opcode, memory);
+    } else if opcode == 0b1111_0010 {
+        cpu.ldh_c_mem_to_a(opcode, memory);
+    } else if opcode == 0b1110_0010 {
+        cpu.ldh_a_to_c_mem(opcode, memory);
+    } else if opcode == 0b1111_0000 {
+        cpu.ldh_imm8_mem_to_a(opcode, memory);
+    } else if opcode == 0b1110_0000 {
+        cpu.ldh_a_to_imm8_mem(opcode, memory);
     } else {
         panic!("Unexpected instruction {opcode:0>8b} {opcode:0>2x}");
     }
@@ -275,7 +434,7 @@ mod test {
 
     #[test]
     fn decode_ld_reg8_to_reg8() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::empty();
         let mut memory = LinearMemory::new();
 
         cpu.a = rand::rng().random_range(0..255);
@@ -307,7 +466,7 @@ mod test {
 
     #[test]
     fn decode_ld_imm8_to_reg8() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::empty();
         let mut memory = LinearMemory::new();
 
         for reg in 0u8..8u8 {
@@ -329,7 +488,7 @@ mod test {
 
     #[test]
     fn decode_ld_imm16_to_reg16() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::empty();
         let mut memory = LinearMemory::new();
 
         for reg16 in 0..4 {
@@ -349,7 +508,7 @@ mod test {
 
     #[test]
     fn decode_ld_between_hl_and_r8() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::empty();
         let mut memory = LinearMemory::new();
 
         let h_value = rand::rng().random_range(0..255u8);
@@ -381,7 +540,7 @@ mod test {
 
     #[test]
     fn decode_ld_imm8_to_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::empty();
         let mut memory = LinearMemory::new();
 
         let h_value = rand::rng().random_range(0..255u8);
@@ -403,9 +562,10 @@ mod test {
         assert_eq!(byte_in_memory, imm8);
     }
 
+    // TODO:  Check hl+ and hl- variants
     #[test]
     fn decode_ld_r16_mem_to_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::empty();
         let mut memory = LinearMemory::new();
 
         let addr1 = rand::rng().random_range(0..((255 * 255) as u16));
@@ -447,9 +607,10 @@ mod test {
         assert_eq!(reg_value2, cpu.a);
     }
 
+    // TODO:  Check hl+ and hl- variants
     #[test]
     fn decode_ld_a_to_r16_mem() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::empty();
         let mut memory = LinearMemory::new();
 
         let addr1 = rand::rng().random_range(0..((255 * 255) as u16));
@@ -489,5 +650,123 @@ mod test {
         decode(&mut cpu, &mut memory);
 
         assert_eq!(reg_value2, memory.get_byte(addr2));
+    }
+
+    #[test]
+    fn decode_ld_imm16_mem_to_a() {
+        let mut cpu = CPU::empty();
+        let mut memory = LinearMemory::new();
+
+        let addr = rand::rng().random_range(0..((255 * 255) as u16));
+        let addr_value = rand::rng().random_range(0..255u8);
+        let opcode = 0b1111_1010;
+
+        memory.set_byte(0, opcode);
+        memory.set_byte(1, (addr & 0x00FF) as u8);
+        memory.set_byte(2, ((addr & 0xFF00) >> 8) as u8);
+        memory.set_byte(addr, addr_value);
+        cpu.pc = 0;
+
+        decode(&mut cpu, &mut memory);
+
+        assert_eq!(addr_value, cpu.a);
+    }
+
+    #[test]
+    fn decode_ld_a_to_imm16_mem() {
+        let mut cpu = CPU::empty();
+        let mut memory = LinearMemory::new();
+
+        let addr = rand::rng().random_range(0..((255 * 255) as u16));
+        let addr_value = rand::rng().random_range(0..255u8);
+        let opcode = 0b1110_1010;
+
+        memory.set_byte(0, opcode);
+        memory.set_byte(1, (addr & 0x00FF) as u8);
+        memory.set_byte(2, ((addr & 0xFF00) >> 8) as u8);
+        cpu.a = addr_value;
+        cpu.pc = 0;
+
+        decode(&mut cpu, &mut memory);
+
+        assert_eq!(addr_value, memory.get_byte(addr));
+    }
+
+    #[test]
+    fn decode_ldh_c_mem_to_a() {
+        let mut cpu = CPU::empty();
+        let mut memory = LinearMemory::new();
+
+        let addr: u16 = 0xFF00 | rand::rng().random_range(0..255u16);
+        let addr_value = rand::rng().random_range(0..255u8);
+        let opcode = 0b1111_0010;
+
+        cpu.pc = 0;
+        cpu.c = (addr & 0x00FF) as u8;
+        memory.set_byte(0, opcode);
+        memory.set_byte(addr, addr_value);
+
+        decode(&mut cpu, &mut memory);
+
+        assert_eq!(addr_value, cpu.a);
+    }
+
+    #[test]
+    fn decode_ldh_a_to_c_mem() {
+        let mut cpu = CPU::empty();
+        let mut memory = LinearMemory::new();
+
+        let addr: u16 = 0xFF00 | rand::rng().random_range(0..255u16);
+        let addr_value = rand::rng().random_range(0..255u8);
+        let opcode = 0b1110_0010;
+
+        cpu.pc = 0;
+        cpu.a = addr_value;
+        cpu.c = (addr & 0x00FF) as u8;
+        memory.set_byte(0, opcode);
+
+        decode(&mut cpu, &mut memory);
+
+        assert_eq!(addr_value, memory.get_byte(addr));
+    }
+
+    #[test]
+    fn decode_ldh_imm8_mem_to_a() {
+        let mut cpu = CPU::empty();
+        let mut memory = LinearMemory::new();
+
+        let imm8: u8 = rand::rng().random_range(0..255u8);
+        let addr: u16 = 0xFF00 | (imm8 as u16);
+        let addr_value = rand::rng().random_range(0..255u8);
+        let opcode = 0b1111_0000;
+
+        cpu.pc = 0;
+        memory.set_byte(0, opcode);
+        memory.set_byte(1, imm8);
+        memory.set_byte(addr, addr_value);
+
+        decode(&mut cpu, &mut memory);
+
+        assert_eq!(addr_value, cpu.a);
+    }
+
+    #[test]
+    fn decode_ldh_a_to_imm8_mem() {
+        let mut cpu = CPU::empty();
+        let mut memory = LinearMemory::new();
+
+        let imm8: u8 = rand::rng().random_range(0..255u8);
+        let addr: u16 = 0xFF00 | (imm8 as u16);
+        let addr_value = rand::rng().random_range(0..255u8);
+        let opcode = 0b1110_0000;
+
+        cpu.pc = 0;
+        cpu.a = addr_value;
+        memory.set_byte(0, opcode);
+        memory.set_byte(1, imm8);
+
+        decode(&mut cpu, &mut memory);
+
+        assert_eq!(addr_value, memory.get_byte(addr));
     }
 }
